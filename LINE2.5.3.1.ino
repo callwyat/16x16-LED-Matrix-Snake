@@ -14,31 +14,96 @@
 #define PSTR // Make Arduino Due happy
 #endif
 
+#define ZigZag
+
 // Defines the pin in which the data is sent to the matrix.
 #define PIN 6
 
+#define SCORE_BOARD_RESET_PIN 0
+
+#define GOBBLE_CLOCK_PIN 1
+#define GOBBLE_UPDOWN_SELECT_PIN 2
+
+#define SCORE_COUNT_PIN 3
+#define SCORE_100_PIN 4
+
+#define COLOR_BACKGROUND 0
+
 // Defines the Matrix.
 Adafruit_NeoMatrix matrix = Adafruit_NeoMatrix(16, 16, PIN,
-                            NEO_MATRIX_TOP + NEO_MATRIX_RIGHT +
-                            NEO_MATRIX_ROWS + NEO_MATRIX_ZIGZAG,
-                            NEO_GRB + NEO_KHZ800);
+                                               NEO_MATRIX_TOP + NEO_MATRIX_RIGHT +
+                                                   NEO_MATRIX_ROWS + NEO_MATRIX_ZIGZAG,
+                                               NEO_GRB + NEO_KHZ800);
 
 // Sets GREEN, RED, BLUE rotating colors for scrolling text.
 const uint16_t colors[] = {
     matrix.Color(255, 0, 0), matrix.Color(0, 255, 0), matrix.Color(0, 0, 255)};
 
+typedef enum
+{
+  PRE_GAME,
+  START_GAME,
+  RUNNING_GAME,
+  END_GAME,
+} GameState_e;
+
+typedef enum
+{
+  EASY,
+  HARD,
+} Difficulty_e;
+
+typedef enum
+{
+  NO_DIRECTION,
+  UP,
+  DOWN,
+  LEFT,
+  RIGHT,
+} Direction_e;
+
+typedef enum
+{
+  NO_COLLISION,
+  BODY_COLLISION,
+  CHERRY_COLLISION,
+  GOBBLE_COLLISION,
+} Collision_e;
+
+typedef union
+{
+  struct
+  {
+    uint8_t Y : 4;
+    uint8_t X : 4;
+  };
+
+  struct
+  {
+    uint8_t A : 8;
+  };
+
+} Location_t;
+
+typedef struct
+{
+  uint8_t Length;
+  Location_t Head;
+} Snake_t;
+
 // Static Variables
-unsigned char sx = 5;
-unsigned char sy = 5;
-char gx;
-char gy;
-char cx;
-char cy;
+Snake_t Snake;
+Location_t SnakeBody[256];
+
+Location_t Gobble, Cherry;
+
+GameState_e GameState = PRE_GAME;
+Difficulty_e Difficulty = EASY;
+
 int frames;
-unsigned char tailLength = 4;
+
 int i = 0;
-unsigned char snakeX[256];
-unsigned char snakeY[256];
+
 unsigned char pointer = 4;
 int x = matrix.width();
 int pass = 0;
@@ -48,21 +113,138 @@ int sColor = matrix.Color(255, 102, 0);
 int cColor = matrix.Color(255, 0, 0);
 //Sets the Eat Self Color for Hard Mode.
 int gColor = matrix.Color(91, 215, 213);
-char sbit;
-int pixelNumber;
+
 int score = 0;
 int times = 0;
 int hold = 500;
 int blueErase = 0;
 
-boolean Change;
-boolean Hard;
-boolean Difficulty = false;
-boolean UP, DOWN, RIGHT, LEFT, OVER = true, ifx = true, STARTED = true;
-boolean LUP, LDOWN, LRIGHT, LLEFT;
+Direction_e CurrentDirection = NO_DIRECTION;
+Direction_e LastDirection = NO_DIRECTION;
+
 boolean PRINT = true;
 
-String Word = " ";
+Direction_e GetDirection(void)
+{
+
+  if (!digitalRead(13))
+  {
+    return DOWN;
+  }
+  else if (!digitalRead(12))
+  {
+    return UP;
+  }
+  else if (!digitalRead(11))
+  {
+    return RIGHT;
+  }
+  else if (!digitalRead(10))
+  {
+    return LEFT;
+  }
+  else
+  {
+    return NO_DIRECTION;
+  }
+}
+
+int GetPixel(Location_t location)
+{
+
+  uint8_t address = location.A;
+
+#ifdef ZigZag
+  // Correct for the ZigZag in the LED Array
+  if (bitRead(address, 4))
+  {
+    address ^= 0x0F;
+  }
+#endif
+
+  return matrix.getPixelColor(address);
+}
+
+int SetPixel(Location_t location, int color)
+{
+  matrix.drawPixel(location.X, location.Y, color);
+}
+
+inline boolean LocationsEqual(Location_t left, Location_t right)
+{
+  return left.A == right.A;
+}
+
+Collision_e GetCollision(Location_t location)
+{
+
+  if (LocationsEqual(location, Cherry))
+  {
+    return CHERRY_COLLISION;
+  }
+  else if (LocationsEqual(location, Gobble))
+  {
+    return GOBBLE_COLLISION;
+  }
+  else if (GetPixel(location) == COLOR_BACKGROUND)
+  {
+    return NO_COLLISION;
+  }
+  else
+  {
+    return BODY_COLLISION;
+  }
+}
+
+Location_t GetRandomLocation(void)
+{
+  Location_t GetRandomLocation();
+  result.X = random(16);
+  result.Y = random(16);
+  return result;
+}
+
+Location_t DrawRandomLocation(int color)
+{
+  Location_t result = GetRandomLocation();
+  SetPixel(result, color);
+  return result;
+}
+
+void ResetGame(void)
+{
+
+  // Reset the score
+  digitalWrite(SCORE_BOARD_RESET_PIN, LOW);
+
+  matrix.fillScreen(COLOR_BACKGROUND);
+  matrix.show();
+
+  tailLength = 4;
+  blueErase = 0;
+
+  score = 0;
+
+  Snake.Head.X = 5;
+  Snake.Head.Y = 5;
+
+  hold = 100;
+
+  Cherry = DrawRandomLocation(cColor);
+
+  STARTED = false;
+  OVER = false;
+  hold = 500;
+
+  if (Hard)
+  {
+    Gobble = DrawRandomLocation(gColor);
+  }
+
+  LastDirection = NO_DIRECTION;
+
+  digitalWrite(SCORE_BOARD_RESET_PIN, HIGH);
+}
 
 void setup()
 {
@@ -92,22 +274,47 @@ void setup()
   randomSeed(analogRead(0));
   // Allows for the arduino to talk to the computer.
   //Serial.begin(9600);
-  // Spawns a cherry some where on the board.
-  cx = random(16);
-  cy = random(16);
-  digitalWrite(0, LOW);
 }
 
 void loop()
 {
   // put your main code here, to run repeatedly:
+  delay(1);
+
+  //Changes the Direction of the snake.
+  Direction_e activeDirection = GetDirection();
+
+  if (activeDirection != NO_DIRECTION)
+  {
+    LastDirection = activeDirection;
+
+    // Only allow changes from Vertical to Horizontal or vise versa
+    if (CurrentDirection == UP || CurrentDirection == DOWN)
+    {
+      if (activeDirection == LEFT || activeDirection == RIGHT)
+      {
+        CurrentDirection = activeDirection;
+      }
+    }
+    else
+    {
+      if (activeDirection == UP || activeDirection || DOWN)
+      {
+        CurrentDirection = activeDirection;
+      }
+    }
+    if (CurrentDirection == LEFT || CurrentDirection)
+      CurrentDirection = activeDirection;
+  }
 
   //Allows controls to be input separately from movement in game.
-  if (frames >= hold)
+  if (++frames >= hold)
   {
-    //lets you chooses between a hard or easy difficulty.
-    if (!Difficulty)
+    frames = 0;
+
+    switch (GameState)
     {
+    case PRE_GAME:
       matrix.show();
       matrix.fillScreen(0);
       matrix.setCursor(x, 0);
@@ -115,6 +322,7 @@ void loop()
       // Displays how to select the hard difficulty.
       matrix.setTextColor(matrix.Color(255, 93, 21));
       matrix.print("Hard");
+      // Draw up arrow
       matrix.drawLine(x + 27, 0, x + 27, 6, matrix.Color(255, 0, 0));
       matrix.drawLine(x + 27, 0, x + 25, 2, matrix.Color(255, 0, 0));
       matrix.drawLine(x + 27, 0, x + 29, 2, matrix.Color(255, 0, 0));
@@ -126,15 +334,6 @@ void loop()
       matrix.drawLine(x + 27, 15, x + 25, 13, matrix.Color(255, 0, 0));
       matrix.drawLine(x + 27, 15, x + 29, 13, matrix.Color(255, 0, 0));
 
-      // Resets the game.
-      sx = 5;
-      sy = 5;
-      hold = 100;
-      DOWN = false;
-      UP = false;
-      RIGHT = false;
-      LEFT = false;
-
       if (--x < -29)
       {
         x = matrix.width();
@@ -144,402 +343,208 @@ void loop()
 
       // Grabs the player input if they select hard.
       /*
-       * Hard Mode adds shedding to the game. If the Player hits the shedded skin it will also end the game.
-       * An new item is added to the game that allows the player to eat themselves and the shedded skin, but
-       * eating the item will increase the speed of the snake without increasing the score.
-       */
-      if (!digitalRead(12))
-      {
-        Hard = true;
-        Difficulty = true;
-        STARTED = true;
-      }
+        * Hard Mode adds shedding to the game. If the Player hits the she--dded skin it will also end the game.
+        * An new item is added to the game that allows the player to eat themselves and the shedded skin, but
+        * eating the item will increase the speed of the snake without increasing the score.
+        */
 
-      // Grabs the player input if they select easy
-      if (!digitalRead(13))
+      switch (LastDirection)
       {
-        Hard = false;
-        Difficulty = true;
-        STARTED = true;
-      }
-    }
-    // Refreshes the game getting rid of old scores and set defaults.
-    if (STARTED && Difficulty)
-    {
-      matrix.fillScreen(0);
-      matrix.show();
-      tailLength = 4;
-      blueErase = 0;
-      digitalWrite(0, HIGH);
-      score = 0;
-      sx = 5;
-      sy = 5;
+      case UP:
+        Difficulty = HARD;
+        GameState = START_GAME;
+        break;
 
-      cx = random(16);
-      cy = random(16);
-      DOWN = false;
-      UP = false;
-      RIGHT = false;
-      LEFT = false;
-      STARTED = false;
-      OVER = false;
-      hold = 500;
-      matrix.drawPixel(cx, cy, cColor);
+      case DOWN:
+        Difficulty = EASY;
+        GameState = START_GAME;
+        break;
+      }
+      break;
 
-      if (Hard)
-      {
-        gx = random(16);
-        gy = random(16);
-        matrix.drawPixel(gx, gy, gColor);
-      }
-    }
-  }
+    case START_GAME:
+      ResetGame();
+      GameState = RUNNING_GAME;
+      break;
 
-  Change = false;
+    case RUNNING_GAME:
 
-  // Makes sure the snake is not outside of the boundaries.
-  if (sx < 0 || sx > 15 || sy < 0 || sy > 15)
-  {
-    OVER = true;
-  }
-
-  //Changes the Direction of the snake.
-  if (!digitalRead(13) && !UP && !Change && !LUP)
-  {
-    DOWN = true;
-    Change = true;
-    UP = false, RIGHT = false, LEFT = false;
-  }
-  if (!digitalRead(12) && !DOWN && !Change && !LDOWN)
-  {
-    UP = true;
-    Change = true;
-    DOWN = false, RIGHT = false, LEFT = false;
-  }
-  if (!digitalRead(11) && !LEFT && !Change && !LLEFT)
-  {
-    RIGHT = true;
-    Change = true;
-    UP = false, DOWN = false, LEFT = false;
-  }
-  if (!digitalRead(10) && !RIGHT && !Change && !LRIGHT)
-  {
-    LEFT = true;
-    Change = true;
-    UP = false, DOWN = false, RIGHT = false;
-  }
-
-  if (frames >= hold)
-  {
-    digitalWrite(2, LOW);
-    digitalWrite(1, LOW);
-    digitalWrite(3, LOW);
-    digitalWrite(0, LOW);
-    delay(1);
-
-    // Adds the color of the snake to the board and detects collision with the snake.
-    if (DOWN && !OVER)
-    {
-      if (bitRead(sy * 16, 4) == 1)
-      {
-        if (matrix.getPixelColor(((sy + 1) * 16) + (16 - sx - 1)) == 0 || (sx == cx && sy + 1 == cy) || (sx == gx && sy + 1 == gy))
-        {
-          //matrix.setPixelColor(((sy + 1) *16) + (16 - sx - 1),RED);
-          matrix.drawPixel(sx, ++sy, sColor);
-        }
-        else
-        {
-          if (blueErase == 0)
-          {
-            OVER = true;
-          }
-          else
-          {
-            matrix.drawPixel(sx, ++sy, sColor);
-            digitalWrite(1, HIGH);
-            blueErase--;
-            tailLength++;
-          }
-        }
-      }
-      else
-      {
-        if (matrix.getPixelColor(((sy + 1) * 16) + sx) == 0 || (sx == cx && sy + 1 == cy) || (sx == gx && sy + 1 == gy))
-        {
-          //matrix.setPixelColor(((sy +1) *16 ) + sx,RED);
-          matrix.drawPixel(sx, ++sy, sColor);
-        }
-        else
-        {
-          if (blueErase == 0)
-          {
-            OVER = true;
-          }
-          else
-          {
-            matrix.drawPixel(sx, ++sy, sColor);
-            digitalWrite(1, HIGH);
-            blueErase--;
-            tailLength++;
-          }
-        }
-      }
-      LDOWN = true;
-      LUP = false;
-      LLEFT = false;
-      LRIGHT = false;
-    }
-    if (UP && !OVER)
-    {
-      if (bitRead(sy * 16, 4) == 1)
-      {
-        if (matrix.getPixelColor(((sy - 1) * 16) + (16 - sx - 1)) == 0 || (sx == cx && sy - 1 == cy) || (sx == gx && sy - 1 == gy))
-        {
-          // Used to debug the the collision function.
-          //matrix.setPixelColor(((sy - 1) *16) + (16 - sx- 1),RED);
-          matrix.drawPixel(sx, --sy, sColor);
-        }
-        else
-        {
-          if (blueErase == 0)
-          {
-            OVER = true;
-          }
-          else
-          {
-            matrix.drawPixel(sx, --sy, sColor);
-            digitalWrite(1, HIGH);
-            blueErase--;
-            tailLength++;
-          }
-        }
-      }
-      else
-      {
-        if (matrix.getPixelColor(((sy - 1) * 16) + sx) == 0 || (sx == cx && sy - 1 == cy) || (sx == gx && sy - 1 == gy))
-        {
-          // Used to debug the the collision function.
-          //matrix.setPixelColor(((sy -1) *16 ) + sx,RED);
-          matrix.drawPixel(sx, --sy, sColor);
-        }
-        else
-        {
-          if (blueErase == 0)
-          {
-            OVER = true;
-          }
-          else
-          {
-            matrix.drawPixel(sx, --sy, sColor);
-            digitalWrite(1, HIGH);
-            blueErase--;
-            tailLength++;
-          }
-        }
-      }
-      LDOWN = false;
-      LUP = true;
-      LLEFT = false;
-      LRIGHT = false;
-    }
-
-    if (RIGHT && !OVER)
-    {
-      if (bitRead(sy * 16, 4) == 0)
-      {
-        if (matrix.getPixelColor((sy * 16) + (16 - (sx + 2))) == 0 || (sx + 1 == cx && sy == cy) || (sx + 1 == gx && sy == gy))
-        {
-          //matrix.setPixelColor((sy *16) + (16 - (sx + 2)),RED);
-          matrix.drawPixel(++sx, sy, sColor);
-        }
-        else
-        {
-          if (blueErase == 0)
-          {
-            OVER = true;
-          }
-          else
-          {
-            matrix.drawPixel(++sx, sy, sColor);
-            digitalWrite(1, HIGH);
-            blueErase--;
-            tailLength++;
-          }
-        }
-      }
-      else
-      {
-        if (matrix.getPixelColor((sy * 16) + (sx + 1)) == 0 || (sx + 1 == cx && sy == cy) || (sx + 1 == gx && sy == gy))
-        {
-          //matrix.setPixelColor((sy *16 ) + (sx + 1),RED);
-          matrix.drawPixel(++sx, sy, sColor);
-        }
-        else
-        {
-          if (blueErase == 0)
-          {
-            OVER = true;
-          }
-          else
-          {
-            matrix.drawPixel(++sx, sy, sColor);
-            digitalWrite(1, HIGH);
-            blueErase--;
-            tailLength++;
-          }
-        }
-      }
-      LDOWN = false;
-      LUP = false;
-      LLEFT = false;
-      LRIGHT = true;
-    }
-
-    if (LEFT && !OVER)
-    {
-      if (bitRead(sy * 16, 4) == 0)
-      {
-        if (matrix.getPixelColor((sy * 16) + (16 - (sx))) == 0 || (sx - 1 == cx && sy == cy) || (sx - 1 == gx && sy == gy))
-        {
-          //.setPixelColor((sy *16) + (16 - (sx)),RED);
-          matrix.drawPixel(--sx, sy, sColor);
-        }
-        else
-        {
-          if (blueErase == 0)
-          {
-            OVER = true;
-          }
-          else
-          {
-            matrix.drawPixel(--sx, sy, sColor);
-            digitalWrite(1, HIGH);
-            blueErase--;
-            tailLength++;
-          }
-        }
-      }
-      else
-      {
-        if (matrix.getPixelColor((sy * 16) + (sx - 1)) == 0 || (sx - 1 == cx && sy == cy) || (sx - 1 == gx && sy == gy))
-        {
-          // matrix.setPixelColor((sy *16 ) + (sx - 1),RED);
-          matrix.drawPixel(--sx, sy, sColor);
-        }
-        else
-        {
-          if (blueErase == 0)
-          {
-            OVER = true;
-          }
-          else
-          {
-            matrix.drawPixel(--sx, sy, sColor);
-            digitalWrite(1, HIGH);
-            tailLength++;
-            blueErase--;
-          }
-        }
-      }
-      LDOWN = false;
-      LUP = false;
-      LLEFT = true;
-      LRIGHT = false;
-    }
-    // tells the matrix to display all the changes.
-    matrix.show();
-    // if the snake head lands on cherry eat cherry, make snake longer, draw new cherry, and speeds up the snake up to a certain point.
-    if (cx == sx && cy == sy && !OVER)
-    {
-      cx = random(16);
-      cy = random(16);
-      matrix.drawPixel(cx, cy, cColor);
-      digitalWrite(3, HIGH);
-      tailLength++;
-      score = score + 1;
-      if (score == 100)
-      {
-        digitalWrite(4, HIGH);
-      }
-      else
-      {
-        digitalWrite(4, LOW);
-      }
-      if (hold > 100)
-      {
-        hold = hold - 10;
-      }
-    }
-
-    // Eats and spawns a Blue Eraser for hard mode.
-    if (gx == sx && gy == sy && !OVER && Hard)
-    {
-      digitalWrite(2, HIGH);
+      digitalWrite(GOBBLE_UPDOWN_SELECT_PIN, LOW);
+      digitalWrite(GOBBLE_CLOCK_PIN, LOW);
+      digitalWrite(SCORE_COUNT_PIN, LOW);
       delay(1);
-      digitalWrite(1, HIGH);
-      gx = random(16);
-      gy = random(16);
-      matrix.drawPixel(gx, gy, gColor);
-      blueErase++;
-    }
 
-    // erases the snakes tail.
-    pointer++;
-    if (pointer == 256)
-    {
-      pointer = 0;
-    }
-    snakeX[pointer] = sx;
-    snakeY[pointer] = sy;
-    if (pointer - tailLength < 0 && !Hard)
-    {
-      matrix.drawPixel(snakeX[pointer + 256 - tailLength], snakeY[pointer + 256 - tailLength], 0);
-      if (snakeX[pointer + 256 - tailLength] == cx && snakeY[pointer + 256 - tailLength == cy])
+      // Makes sure the snake is not outside of the boundaries.
+      switch (CurrentDirection)
       {
-        matrix.drawPixel(cx, cy, cColor);
+      case UP:
+        if (Snake.Head.Y == 0)
+        {
+          GameState = END_GAME;
+        }
+        break;
+      case DOWN:
+        if (Snake.Head.Y == 15)
+        {
+          GameState = END_GAME;
+        }
+        break;
+      case LEFT:
+        if (Snake.Head.X == 0)
+        {
+          GameState = END_GAME;
+        }
+        break;
+      case RIGHT:
+        if (Snake.Head.X == 15)
+        {
+          GameState = END_GAME;
+        }
+        break;
       }
-    }
-    else
-    {
-      matrix.drawPixel(snakeX[pointer - tailLength], snakeY[pointer - tailLength], 0);
-      if (snakeX[pointer - tailLength] == cx && snakeY[pointer - tailLength == cy])
-      {
-        matrix.drawPixel(cx, cy, cColor);
-      }
-    }
 
-    matrix.show();
-    // delay the matrix then repeat.
-    if (times == 3)
-    {
-      times = 0;
-      Difficulty = false;
-    }
-    // Displays that the game is over and the score of the player.
-    if (OVER == true && Difficulty)
-    {
-      hold = 100;
-      matrix.fillScreen(0);
-      matrix.setCursor(x, 0);
-      matrix.print(F("Gameover"));
-      if (times >= 1 && !digitalRead(11) || !digitalRead(10))
+      if (GameState == END_GAME)
       {
-        times = 3;
+        return;
       }
-      if (--x < -46)
+
+      // Adds the color of the snake to the board and detects collision with the snake.
+
+      Location_t collisionLocation = Snake.Head;
+
+      switch (CurrentDirection)
       {
-        x = matrix.width();
-        if (++pass >= 3)
-          pass = 0;
-        matrix.setTextColor(colors[pass]);
-        times++;
+      case UP:
+        --collisionLocation.Y;
+        break;
+      case DOWN:
+        ++collisionLocation.Y;
+        break;
+      case LEFT:
+        --collisionLocation.X;
+        break;
+      case RIGHT:
+        ++collisionLocation.X;
+        break;
       }
-      matrix.setCursor(0, 8);
-      matrix.print(score);
-      matrix.show();
+
+      switch (GetCollision(collisionLocation))
+      {
+      case BODY_COLLISION:
+        if (blueErase == 0)
+        {
+          OVER = true;
+        }
+        else
+        {
+          digitalWrite(GOBBLE_CLOCK_PIN, HIGH);
+          --blueErase;
+          ++Snake.Length;
+        }
+        break;
+
+      case CHERRY_COLLISION:
+
+        Cherry = DrawRandomLocation(cColor);
+
+        ++Snake.Length;
+        ++score;
+
+        digitalWrite(SCORE_COUNT_PIN, HIGH);
+        digitalWrite(SCORE_100_PIN, score >= 100);
+
+        if (hold > 100)
+        {
+          hold -= 10;
+        }
+        break;
+
+      case GOBBLE_COLLISION:
+
+        Gobble = DrawRandomLocation(gColor);
+
+        ++blueErase;
+
+        digitalWrite(GOBBLE_UPDOWN_SELECT_PIN, HIGH);
+        delay(1);
+        digitalWrite(GOBBLE_CLOCK_PIN, HIGH);
+
+        break;
+
+      case NO_COLLISION:
+        // Nothing to do sir
+        break;
+      }
+
+      SetPixel(collisionLocation, sColor);
+
+      // Erases the snakes tail.
+      if (++pointer == 256)
+      {
+        pointer = 0;
+      }
+
+      SnakeBody[pointer] = Snake.Head = collisionLocation;
+
+      uint8_t tailPointer = pointer - tailLength;
+
+      if (tailPointer < 0 && Difficulty != HARD)
+      {
+        tailPointer += 256;
+      }
+
+      if (tailPointer > 0)
+      {
+        Location_t clearLocation = SnakeBody[tailPointer];
+
+        int color = COLOR_BACKGROUND;
+
+        if (LocationsEqual(clearLocation, Cherry))
+        {
+          color = cColor;
+        }
+        else if (LocationsEqual(clearLocation, Gobble))
+        {
+          color = gColor;
+        }
+
+        SetPixel(clearLocation, color);
+
+        matrix.show();
+        break;
+
+      case END_GAME:
+
+        static loopTimes = 0;
+
+        // delay the matrix then repeat.
+        if ((loopTimes >= 1 && LastDirection == RIGHT || LastDirection == LEFT) || loopTimes >= 3)
+        {
+          loopTimes = 0;
+          GameState = PRE_GAME;
+        }
+        else
+        {
+
+          hold = 100;
+          matrix.fillScreen(0);
+          matrix.setCursor(x, 0);
+          matrix.print(F("Gameover"));
+
+          if (--x < -46)
+          {
+            x = matrix.width();
+            if (++pass >= 3)
+              pass = 0;
+            matrix.setTextColor(colors[pass]);
+            times++;
+          }
+          matrix.setCursor(0, 8);
+          matrix.print(score);
+          matrix.show();
+        }
+
+        break;
+      }
     }
-    frames = 0;
   }
-  frames = frames + 2;
-  delay(1);
-}
